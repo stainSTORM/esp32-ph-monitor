@@ -2,7 +2,7 @@
 
 A firmware for the ESP32-S3 that monitors liquid pH and temperature and integrates with [Arkitekt](https://arkitekt.live) for real-time data streaming, remote control, and guided pH calibration — all from the Arkitekt Orchestrator UI.
 
-![Hardware setup](docs/image.png)
+![Hardware setup](docs/setup.jpeg)
 
 ## What It Measures
 
@@ -113,11 +113,17 @@ cd esp32-ph-monitor
 pio run -e xh-s3e-ph-monitor --target upload
 ```
 
-### Provision
+### Provision with Pokket
 
-After flashing, open **Pokket** on your Android phone. Pokket delivers Wi-Fi credentials and an Arkitekt connection token to the ESP32 over BLE — no hardcoded secrets needed. WPA2-Enterprise (Eduroam) is supported.
+[**Pokket**](https://github.com/jhnnsrs/pokket) is the companion Android app for the Arkitekt ecosystem. It delivers Wi-Fi credentials and an Arkitekt connection token to the ESP32 over BLE — no hardcoded secrets or serial connection needed. WPA2-Enterprise (Eduroam) is supported.
 
-On boot the device waits 5 seconds for a BLE connection. If valid credentials are already stored in flash it reconnects automatically without requiring Pokket again.
+1. Flash the firmware and power the device.
+2. Open Pokket on your Android phone.
+3. Tap **Provision** and select the ESP32 from the list of nearby BLE devices.
+4. Enter your Wi-Fi profile and your Arkitekt instance URL.
+5. Pokket sends the credentials over BLE; the device connects and registers as an agent automatically.
+
+On boot the device waits 5 seconds for a BLE connection. If valid credentials are already stored in flash it reconnects automatically without requiring Pokket again. To force re-provisioning, erase the stored preferences or reflash the firmware.
 
 ## Dependencies
 
