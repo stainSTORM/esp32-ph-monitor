@@ -5,7 +5,7 @@
 #include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <Adafruit_BME280.h>
+#include <Adafruit_BMP280.h>
 #include <Preferences.h>
 
 // ── Pin configuration ────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ constexpr uint8_t PH_ADC_PIN   = 1;   // pH AOUT → ADC1_CH0
 constexpr uint8_t DS18B20_PIN  = 4;   // T1 on pH board → OneWire data
 constexpr uint8_t I2C_SDA_PIN  = 8;
 constexpr uint8_t I2C_SCL_PIN  = 9;
-constexpr uint8_t BME280_ADDR  = 0x76;
+constexpr uint8_t BMP280_ADDR  = 0x76;
 
 // ── pH calibration defaults (overridden by NVS on load) ──────────────────────
 // To calibrate: use the calibrate_ph_point Arkitekt function.
@@ -32,8 +32,8 @@ static OneWire           oneWire(DS18B20_PIN);
 static DallasTemperature ds18b20(&oneWire);
 static bool              ds18b20Ready = false;
 
-static Adafruit_BME280 bme;
-static bool            bmeReady = false;
+static Adafruit_BMP280 bmp;
+static bool            bmpReady = false;
 
 // Nernst-equation temperature compensation.
 static float voltageToPH(float v, float tempC = PH_CAL_REF_TEMP)
@@ -109,11 +109,17 @@ void initSensors()
     }
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    bmeReady = bme.begin(BME280_ADDR);
-    if (bmeReady)
-        Serial.printf("[SENSOR] BME280 OK  addr=0x%02X\n", BME280_ADDR);
-    else
-        Serial.printf("[SENSOR] BME280 NOT found at 0x%02X\n", BME280_ADDR);
+    bmpReady = bmp.begin(BMP280_ADDR);
+    if (bmpReady) {
+        bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                        Adafruit_BMP280::SAMPLING_X2,
+                        Adafruit_BMP280::SAMPLING_X16,
+                        Adafruit_BMP280::FILTER_X16,
+                        Adafruit_BMP280::STANDBY_MS_500);
+        Serial.printf("[SENSOR] BMP280 OK  addr=0x%02X\n", BMP280_ADDR);
+    } else {
+        Serial.printf("[SENSOR] BMP280 NOT found at 0x%02X\n", BMP280_ADDR);
+    }
 
     analogSetPinAttenuation(PH_ADC_PIN, ADC_11db);
     Serial.printf("[SENSOR] pH ADC  pin=%d  oversample=%d\n", PH_ADC_PIN, PH_OVERSAMPLE);
@@ -144,16 +150,16 @@ bool readPH(float &voltage, float &ph, float tempC = PH_CAL_REF_TEMP)
     return true;
 }
 
-bool readEnvironment(float &temperature, float &humidity, float &pressure)
+// Returns temperature (°C) and pressure (hPa). No humidity on BMP280.
+bool readEnvironment(float &temperature, float &pressure)
 {
-    if (!bmeReady) { temperature = humidity = pressure = -1.0f; return false; }
-    temperature = bme.readTemperature();
-    humidity    = bme.readHumidity();
-    pressure    = bme.readPressure() / 100.0f;
+    if (!bmpReady) { temperature = pressure = -1.0f; return false; }
+    temperature = bmp.readTemperature();
+    pressure    = bmp.readPressure() / 100.0f;
     return true;
 }
 
-bool isBMEReady()     { return bmeReady; }
+bool isBMPReady()     { return bmpReady; }
 bool isDS18B20Ready() { return ds18b20Ready; }
 
 #endif // PH_TEMP_SENSORS_H

@@ -135,29 +135,27 @@ void registerReadSensors()
         .returnFloat("ph",                 "pH",           "Temperature-compensated pH (0-14)")
         .returnFloat("ph_voltage",         "pH Voltage",   "Raw ADC voltage (V)")
         .returnFloat("liquid_temperature", "Liquid Temp",  "DS18B20 solution temperature (C); -1 if absent")
-        .returnFloat("temperature",        "Ambient Temp", "BME280 ambient temperature (C); -1 if absent")
-        .returnFloat("humidity",           "Humidity",     "BME280 humidity (%RH); -1 if absent")
-        .returnFloat("pressure",           "Pressure",     "BME280 pressure (hPa); -1 if absent")
-        .returnBool("bme_ok",              "BME280 OK",    "False if BME280 did not respond")
+        .returnFloat("temperature",        "Ambient Temp", "BMP280 ambient temperature (C); -1 if absent")
+        .returnFloat("pressure",           "Pressure",     "BMP280 pressure (hPa); -1 if absent")
+        .returnBool("bmp_ok",              "BMP280 OK",    "False if BMP280 did not respond")
         .returnBool("ds18b20_ok",          "DS18B20 OK",   "False if DS18B20 did not respond")
         .build();
 
     app.registerFunction("read_sensors", def,
         [](ArkitektApp &, Agent &, JsonObject, ReplyChannel &reply) -> bool {
-            float voltage, ph, liquidTemp, temp, humidity, pressure;
+            float voltage, ph, liquidTemp, temp, pressure;
             bool ds18b20Ok = readLiquidTemperature(liquidTemp);
             readPH(voltage, ph, ds18b20Ok ? liquidTemp : PH_CAL_REF_TEMP);
-            bool bmeOk = readEnvironment(temp, humidity, pressure);
+            bool bmpOk = readEnvironment(temp, pressure);
 
-            StaticJsonDocument<384> doc;
+            StaticJsonDocument<256> doc;
             JsonObject ret = doc.to<JsonObject>();
             ret["ph"]                 = ph;
             ret["ph_voltage"]         = voltage;
             ret["liquid_temperature"] = liquidTemp;
             ret["temperature"]        = temp;
-            ret["humidity"]           = humidity;
             ret["pressure"]           = pressure;
-            ret["bme_ok"]             = bmeOk;
+            ret["bmp_ok"]             = bmpOk;
             ret["ds18b20_ok"]         = ds18b20Ok;
             reply.done(ret);
             return true;
@@ -197,19 +195,17 @@ void registerStates()
         });
     }
     {
-        auto def = StateBuilder("environment_status", "Environment", 384)
-            .portFloat("temperature",  "Temperature", "BME280 ambient temperature (C)")
-            .portFloat("humidity",     "Humidity",    "%RH")
+        auto def = StateBuilder("environment_status", "Environment", 256)
+            .portFloat("temperature",  "Temperature", "BMP280 ambient temperature (C)")
             .portFloat("pressure",     "Pressure",    "hPa")
-            .portBool("bme_ok",        "BME280 OK",   "False if sensor absent")
+            .portBool("bmp_ok",        "BMP280 OK",   "False if sensor absent")
             .portInt("readings_count", "Readings",    "Total readings since boot")
             .build();
 
         app.registerState("environment_status", def, [](AgentState *state) {
             state->setPort("temperature",    0.0f);
-            state->setPort("humidity",       0.0f);
             state->setPort("pressure",       0.0f);
-            state->setPort("bme_ok",         false);
+            state->setPort("bmp_ok",         false);
             state->setPort("readings_count", 0);
         });
     }
@@ -244,10 +240,10 @@ void setup()
             static int count = 0;
             count++;
 
-            float voltage, ph, liquidTemp, temp, humidity, pressure;
+            float voltage, ph, liquidTemp, temp, pressure;
             bool ds18b20Ok = readLiquidTemperature(liquidTemp);
             readPH(voltage, ph, ds18b20Ok ? liquidTemp : PH_CAL_REF_TEMP);
-            bool bmeOk = readEnvironment(temp, humidity, pressure);
+            bool bmpOk = readEnvironment(temp, pressure);
 
             AgentState *phState = agent.getState("ph_status");
             if (phState) {
@@ -260,18 +256,17 @@ void setup()
 
             AgentState *envState = agent.getState("environment_status");
             if (envState) {
-                envState->setPort("temperature",    bmeOk ? temp     : -1.0f);
-                envState->setPort("humidity",       bmeOk ? humidity : -1.0f);
-                envState->setPort("pressure",       bmeOk ? pressure : -1.0f);
-                envState->setPort("bme_ok",         bmeOk);
+                envState->setPort("temperature",    bmpOk ? temp     : -1.0f);
+                envState->setPort("pressure",       bmpOk ? pressure : -1.0f);
+                envState->setPort("bmp_ok",         bmpOk);
                 envState->setPort("readings_count", count);
             }
 
-            Serial.printf("[BG] #%d | pH %.2f (%.3fV) | liquid %.1fC (%s) | ambient %.1fC %.1f%%RH %.1fhPa (%s)\n",
+            Serial.printf("[BG] #%d | pH %.2f (%.3fV) | liquid %.1fC (%s) | ambient %.1fC %.1fhPa (%s)\n",
                           count, ph, voltage,
                           ds18b20Ok ? liquidTemp : -1.0f, ds18b20Ok ? "OK" : "MISSING",
-                          bmeOk ? temp : -1.0f, bmeOk ? humidity : -1.0f, bmeOk ? pressure : -1.0f,
-                          bmeOk ? "OK" : "MISSING");
+                          bmpOk ? temp : -1.0f, bmpOk ? pressure : -1.0f,
+                          bmpOk ? "OK" : "MISSING");
         },
         SENSOR_INTERVAL_MS);
 
