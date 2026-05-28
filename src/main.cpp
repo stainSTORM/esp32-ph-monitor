@@ -44,22 +44,27 @@ void registerToggleLed()
 void registerCalibratePhPoint()
 {
     auto def = FunctionBuilder("calibrate_ph_point",
-                               "Calibrate the pH sensor at a single buffer point. "
-                               "Place the probe in the buffer solution and wait for the reading "
-                               "to stabilize, then call this function.",
-                               16, 256)
-        .argFloat("buffer_ph", "Buffer pH", "Known pH of the calibration buffer — must be 4.0 or 7.0")
-        .returnFloat("measured_voltage", "Measured Voltage", "ADC voltage recorded at this calibration point (V)")
-        .returnFloat("buffer_ph",        "Buffer pH",        "The pH value the calibration was recorded for")
-        .returnFloat("v_at_7",           "V at pH 7",        "Full stored calibration: voltage at pH 7 (V)")
-        .returnFloat("v_at_4",           "V at pH 4",        "Full stored calibration: voltage at pH 4 (V)")
+                               "Record a calibration point at any known buffer pH. "
+                               "Place the probe in the buffer and wait for the reading to stabilize, "
+                               "then call this function. Replaces the nearest stored point if within "
+                               "±0.2 pH, otherwise adds a new one (up to 5 points). "
+                               "With 3 or more points, electrode linearity is automatically checked.",
+                               16, 512)
+        .argFloat("buffer_ph", "Buffer pH", "Known pH of the calibration buffer (e.g. 4.01, 6.86, 9.18)")
+        .returnFloat("measured_voltage", "Measured Voltage",   "ADC voltage recorded at this buffer (V)")
+        .returnFloat("buffer_ph",        "Buffer pH",          "pH value the point was recorded at")
+        .returnInt("cal_count",          "Calibration Points", "Total stored calibration points after this update")
+        .returnFloat("slope",            "Slope (V/pH)",       "Regression slope — typically −0.05 to −0.07 V/pH for a good electrode")
+        .returnFloat("intercept",        "Intercept (V)",      "Regression intercept (voltage extrapolated to pH 0)")
+        .returnBool("linearity_ok",      "Linearity OK",       "True if all points fit the regression line within tolerance")
+        .returnFloat("max_residual_ph",  "Max Residual (pH)",  "Largest deviation of any stored point from the regression line")
         .build();
 
     app.registerFunction("calibrate_ph_point", def,
         [](ArkitektApp &, Agent &, JsonObject args, ReplyChannel &reply) -> bool {
-            float bufferPH = args["buffer_ph"] | 0.0f;
-            if (fabsf(bufferPH - 7.0f) > 0.01f && fabsf(bufferPH - 4.0f) > 0.01f) {
-                reply.critical("buffer_ph must be 4.0 or 7.0");
+            float bufferPH = args["buffer_ph"] | -1.0f;
+            if (bufferPH < 0.0f || bufferPH > 14.0f) {
+                reply.critical("buffer_ph must be between 0 and 14");
                 return false;
             }
 
@@ -67,20 +72,33 @@ void registerCalibratePhPoint()
             bool ds18b20Ok = readLiquidTemperature(liquidTemp);
             readPH(voltage, ph, ds18b20Ok ? liquidTemp : PH_CAL_REF_TEMP);
 
-            if (!saveCalibrationPoint(bufferPH, voltage)) {
-                reply.critical("Failed to save calibration point to NVS");
-                return false;
+            float maxResidualPH = addCalibrationPoint(bufferPH, voltage);
+
+            float slope, intercept;
+            getCalibrationRegression(slope, intercept);
+            int   calCount    = getCalibrationCount();
+            bool  linearityOk = (calCount < 3) || (maxResidualPH <= CAL_LINEARITY_WARN_PH);
+
+            if (!linearityOk) {
+                String warn = "Calibration point at pH ";
+                warn += String(bufferPH, 2);
+                warn += " deviates ";
+                warn += String(maxResidualPH, 2);
+                warn += " pH units from the regression line. "
+                        "This suggests the electrode response is not linear — "
+                        "consider replacing the probe.";
+                reply.log(warn, "WARNING");
             }
 
-            float v7, v4;
-            getCalibrationVoltages(v7, v4);
-
-            StaticJsonDocument<256> doc;
+            StaticJsonDocument<384> doc;
             JsonObject ret = doc.to<JsonObject>();
             ret["measured_voltage"] = voltage;
             ret["buffer_ph"]        = bufferPH;
-            ret["v_at_7"]           = v7;
-            ret["v_at_4"]           = v4;
+            ret["cal_count"]        = calCount;
+            ret["slope"]            = slope;
+            ret["intercept"]        = intercept;
+            ret["linearity_ok"]     = linearityOk;
+            ret["max_residual_ph"]  = maxResidualPH;
             reply.done(ret);
             return true;
         });
@@ -89,20 +107,46 @@ void registerCalibratePhPoint()
 void registerGetCalibration()
 {
     auto def = FunctionBuilder("get_calibration",
-                               "Returns the current pH calibration values stored on the device.",
-                               16, 128)
-        .returnFloat("v_at_7", "V at pH 7", "Stored calibration voltage at pH 7 (V)")
-        .returnFloat("v_at_4", "V at pH 4", "Stored calibration voltage at pH 4 (V)")
+                               "Returns current calibration: regression parameters, all stored buffer points, "
+                               "and a linearity check. Up to 5 points are shown as point_N_ph / point_N_v.",
+                               16, 512)
+        .returnInt("cal_count",         "Calibration Points", "Number of stored calibration points (0 = using theoretical defaults)")
+        .returnFloat("slope",           "Slope (V/pH)",       "Regression slope")
+        .returnFloat("intercept",       "Intercept (V)",      "Regression intercept")
+        .returnBool("linearity_ok",     "Linearity OK",       "True if all points fit the line within tolerance")
+        .returnFloat("max_residual_ph", "Max Residual (pH)",  "Largest per-point deviation from the regression line")
+        .returnFloat("point_0_ph",  "Point 0 pH",  "Calibration point 0 pH  (−1 if unused)").returnFloat("point_0_v", "Point 0 V", "")
+        .returnFloat("point_1_ph",  "Point 1 pH",  "Calibration point 1 pH  (−1 if unused)").returnFloat("point_1_v", "Point 1 V", "")
+        .returnFloat("point_2_ph",  "Point 2 pH",  "Calibration point 2 pH  (−1 if unused)").returnFloat("point_2_v", "Point 2 V", "")
+        .returnFloat("point_3_ph",  "Point 3 pH",  "Calibration point 3 pH  (−1 if unused)").returnFloat("point_3_v", "Point 3 V", "")
+        .returnFloat("point_4_ph",  "Point 4 pH",  "Calibration point 4 pH  (−1 if unused)").returnFloat("point_4_v", "Point 4 V", "")
         .build();
 
     app.registerFunction("get_calibration", def,
         [](ArkitektApp &, Agent &, JsonObject, ReplyChannel &reply) -> bool {
-            float v7, v4;
-            getCalibrationVoltages(v7, v4);
-            StaticJsonDocument<128> doc;
+            float slope, intercept;
+            getCalibrationRegression(slope, intercept);
+            int   calCount      = getCalibrationCount();
+            float maxResidualPH = getCalibrationLinearity();
+            bool  linearityOk   = (calCount < 3) || (maxResidualPH <= CAL_LINEARITY_WARN_PH);
+
+            const CalibrationPoint *pts;
+            int cnt;
+            getCalibrationPoints(&pts, cnt);
+
+            StaticJsonDocument<512> doc;
             JsonObject ret = doc.to<JsonObject>();
-            ret["v_at_7"] = v7;
-            ret["v_at_4"] = v4;
+            ret["cal_count"]        = calCount;
+            ret["slope"]            = slope;
+            ret["intercept"]        = intercept;
+            ret["linearity_ok"]     = linearityOk;
+            ret["max_residual_ph"]  = maxResidualPH;
+            for (int i = 0; i < MAX_CAL_POINTS; i++) {
+                String kph = "point_" + String(i) + "_ph";
+                String kv  = "point_" + String(i) + "_v";
+                ret[kph]   = (i < cnt) ? pts[i].pH      : -1.0f;
+                ret[kv]    = (i < cnt) ? pts[i].voltage  : -1.0f;
+            }
             reply.done(ret);
             return true;
         });
@@ -178,19 +222,27 @@ void registerStates()
         });
     }
     {
-        auto def = StateBuilder("ph_status", "pH Sensor", 384)
-            .portFloat("ph",                 "pH",          "Temperature-compensated pH (0-14)")
-            .portFloat("voltage",            "Voltage",     "Raw ADC voltage (V)")
-            .portFloat("liquid_temperature", "Liquid Temp", "DS18B20 solution temperature (C)")
-            .portBool("ds18b20_ok",          "DS18B20 OK",  "False if sensor absent")
-            .portInt("readings_count",       "Readings",    "Total readings since boot")
+        auto def = StateBuilder("ph_status", "pH Sensor", 512)
+            .portFloat("ph",                 "pH",            "Temperature-compensated pH (0-14)")
+            .portFloat("voltage",            "Voltage",       "Raw ADC voltage (V)")
+            .portFloat("liquid_temperature", "Liquid Temp",   "DS18B20 solution temperature (C)")
+            .portBool("ds18b20_ok",          "DS18B20 OK",    "False if sensor absent")
+            .portInt("cal_count",            "Cal Points",    "Number of stored calibration points (0 = theoretical defaults)")
+            .portFloat("cal_slope",          "Cal Slope",     "Calibration regression slope (V/pH)")
+            .portBool("cal_linearity_ok",    "Cal Linear",    "False if any calibration point deviates beyond tolerance")
+            .portInt("readings_count",       "Readings",      "Total readings since boot")
             .build();
 
         app.registerState("ph_status", def, [](AgentState *state) {
+            float slope, intercept;
+            getCalibrationRegression(slope, intercept);
             state->setPort("ph",                 7.0f);
             state->setPort("voltage",            0.0f);
             state->setPort("liquid_temperature", 25.0f);
             state->setPort("ds18b20_ok",         false);
+            state->setPort("cal_count",          getCalibrationCount());
+            state->setPort("cal_slope",          slope);
+            state->setPort("cal_linearity_ok",   true);
             state->setPort("readings_count",     0);
         });
     }
@@ -247,10 +299,17 @@ void setup()
 
             AgentState *phState = agent.getState("ph_status");
             if (phState) {
+                float slope, intercept;
+                getCalibrationRegression(slope, intercept);
+                int  calCount    = getCalibrationCount();
+                bool linearityOk = (calCount < 3) || (getCalibrationLinearity() <= CAL_LINEARITY_WARN_PH);
                 phState->setPort("ph",                 ph);
                 phState->setPort("voltage",            voltage);
                 phState->setPort("liquid_temperature", ds18b20Ok ? liquidTemp : -1.0f);
                 phState->setPort("ds18b20_ok",         ds18b20Ok);
+                phState->setPort("cal_count",          calCount);
+                phState->setPort("cal_slope",          slope);
+                phState->setPort("cal_linearity_ok",   linearityOk);
                 phState->setPort("readings_count",     count);
             }
 
