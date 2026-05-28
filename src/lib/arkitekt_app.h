@@ -846,6 +846,11 @@ private:
         case WStype_CONNECTED:
         {
             Serial.println("WebSocket connected");
+            if (agent)
+            {
+                agent->beginSession();
+            }
+
             StaticJsonDocument<512> doc;
             doc["type"] = "REGISTER";
             doc["instance_id"] = instanceId;
@@ -858,7 +863,12 @@ private:
         }
 
         case WStype_DISCONNECTED:
-            Serial.println("WebSocket disconnected");
+            if (length > 0)
+                Serial.printf("WebSocket disconnected (code: %d, reason: %s)\n", (int)payload[0], (char *)payload);
+            else
+                Serial.println("WebSocket disconnected (no reason given)");
+            if (agent)
+                agent->resetSession();
             break;
 
         case WStype_TEXT:

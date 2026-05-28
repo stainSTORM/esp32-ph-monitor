@@ -192,10 +192,13 @@ private:
     WebSocketsClient **wsPtr; // Pointer to Agent's ws pointer
     String *sessionId;
     int *globalRevPtr; // Points to Agent's global revision counter
+    bool *sessionReadyPtr; // Points to Agent's sessionReady flag
 
     void sendPatch(const String &key, const JsonVariant &oldValue)
     {
         if (!wsPtr || !*wsPtr || !sessionId || sessionId->length() == 0)
+            return;
+        if (!sessionReadyPtr || !*sessionReadyPtr)
             return;
 
         (*globalRevPtr)++;
@@ -222,8 +225,8 @@ private:
     }
 
 public:
-    AgentState(const String &iface, const StateDefinition &def, WebSocketsClient **websocket, String *session, int *globalRev)
-        : interfaceName(iface), definition(def), valuesDoc(1024), wsPtr(websocket), sessionId(session), globalRevPtr(globalRev)
+    AgentState(const String &iface, const StateDefinition &def, WebSocketsClient **websocket, String *session, int *globalRev, bool *sessionReady)
+        : interfaceName(iface), definition(def), valuesDoc(1024), wsPtr(websocket), sessionId(session), globalRevPtr(globalRev), sessionReadyPtr(sessionReady)
     {
         valuesDoc.to<JsonObject>(); // Initialize as empty object
     }
@@ -288,14 +291,14 @@ private:
     WebSocketsClient *ws;
     String sessionId;
     int globalRev;
+    bool sessionReady;
 
 public:
     Agent(App *appInstance, const String &service, const String &instance, const String &name)
-        : app(appInstance), serviceIdentifier(service), instanceId(instance), agentName(name), ws(nullptr), globalRev(0)
+        : app(appInstance), serviceIdentifier(service), instanceId(instance), agentName(name), ws(nullptr), globalRev(0), sessionReady(false)
     {
         registry = new FunctionRegistry();
-        sessionId = agentGenerateUUID4();
-        Serial.println("[AGENT] Session ID: " + sessionId);
+        beginSession();
     }
 
     ~Agent()
@@ -317,6 +320,14 @@ public:
         return sessionId;
     }
 
+    void beginSession()
+    {
+        sessionId = agentGenerateUUID4();
+        globalRev = 0;
+        currentAssignation = "";
+        Serial.println("[AGENT] Session ID: " + sessionId);
+    }
+
     FunctionRegistry *getRegistry()
     {
         return registry;
@@ -330,7 +341,7 @@ public:
     void registerState(const String &stateName, const StateDefinition &definition)
     {
         stateDefinitions[stateName] = definition;
-        AgentState *state = new AgentState(stateName, definition, &ws, &sessionId, &globalRev);
+        AgentState *state = new AgentState(stateName, definition, &ws, &sessionId, &globalRev, &sessionReady);
         states[stateName] = state;
         Serial.println("Registered state: " + stateName);
     }
@@ -375,6 +386,12 @@ public:
         serializeJson(doc, msg);
         Serial.println("[AGENT] SESSION_INIT >> " + msg);
         ws->sendTXT(msg);
+        sessionReady = true;
+    }
+
+    void resetSession()
+    {
+        sessionReady = false;
     }
 
     void sendStateSnapshot()
@@ -440,7 +457,7 @@ mutation EnsureAgent($input: AgentInput!) {
         String serverHash = ensureRespDoc["data"]["ensureAgent"]["hash"] | "";
         Serial.println("Server agent hash: " + serverHash);
 
-        // Compute local hash from registered definitions
+        // Compute local hash from the current implementation payload.
         String localHash = computeDefinitionsHash();
         Serial.println("Local definitions hash: " + localHash);
 
@@ -452,7 +469,7 @@ mutation EnsureAgent($input: AgentInput!) {
         }
 
         Serial.println("Hashes differ, re-implementing agent...");
-        return implementAgent(name, extensions, errorMessage);
+        return implementAgent(name, extensions, localHash, errorMessage);
     }
 
 private:
@@ -492,7 +509,7 @@ private:
         return String(hash, HEX);
     }
 
-    bool implementAgent(const String &name, const JsonArray &extensions, String &errorMessage)
+    bool implementAgent(const String &name, const JsonArray &extensions, const String &hash, String &errorMessage)
     {
         Serial.println("\n=== Implementing Agent ===");
 
@@ -505,7 +522,6 @@ mutation ImplementAgent($input: ImplementAgentInput!) {
     id
     instanceId
     name
-    extensions
   }
 }
 )";
@@ -516,11 +532,15 @@ mutation ImplementAgent($input: ImplementAgentInput!) {
         JsonObject input = vars["input"].to<JsonObject>();
         input["instanceId"] = instanceId;
         input["name"] = name;
+        input["hash"] = hash;
 
-        // Extensions
-        if (extensions.size() > 0)
+        if (!extensions.isNull())
         {
-            input["extensions"] = extensions;
+            JsonArray inputExtensions = input["extensions"].to<JsonArray>();
+            for (JsonVariant extension : extensions)
+            {
+                inputExtensions.add(extension.as<const char *>());
+            }
         }
 
         // Implementations
